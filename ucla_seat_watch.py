@@ -30,11 +30,16 @@ Everyday use
   python3 ucla_seat_watch.py --open          # also open MyUCLA on this computer
 
 The computer running this must stay awake and online; the script is what
-does the checking. Python 3.8+, standard library only.
+does the checking. To run it without your computer, use the GitHub Actions
+workflow that comes with it (seat-watch.yml), which runs
+    python3 ucla_seat_watch.py --once --state state.json
+every 5 minutes; --state remembers the last status between runs.
+Python 3.8+, standard library only.
 """
 
 import argparse
 import html
+import json
 import os
 import platform
 import random
@@ -274,21 +279,46 @@ def test_push(topic=None):
 
 
 # --------------------------------------------------------------------------
+# Remembering the last status between separate runs (--state)
+# --------------------------------------------------------------------------
+def load_state(path):
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        return {tuple(k.split("|", 1)): v for k, v in raw.items()}
+    except (OSError, ValueError):
+        return {}   # unreadable state: start fresh rather than crash
+
+
+def save_state(path, previous):
+    if not path:
+        return
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"|".join(k): v for k, v in previous.items()}, fh, indent=1)
+
+
+# --------------------------------------------------------------------------
 # Main loop
 # --------------------------------------------------------------------------
 def check_all(previous, topic, open_browser):
+    """Check every course once. Returns how many courses could not be checked."""
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     now = time.time()
+    failures = 0
     for course in COURSES:
         try:
             sections = parse_sections(fetch(results_url(course)))
         except Exception as exc:
             print("[%s] %s: could not check (%s)" % (stamp, course["label"], exc))
+            failures += 1
             continue
 
         if not sections:
             print("[%s] %s: no sections found - check TERM/subj/catlg, or the page layout changed"
                   % (stamp, course["label"]))
+            failures += 1
             continue
 
         for s in sections:
@@ -321,6 +351,7 @@ def check_all(previous, topic, open_browser):
                 # Not a spot for you yet, but the class changed state - worth a quiet heads-up.
                 alert(topic, "Status changed: %s" % name,
                       "%s | waitlist: %s" % (s["status"], s["waitlist"]), urgent=False)
+    return failures
 
 
 def main():
@@ -329,6 +360,7 @@ def main():
                     help="seconds between checks (default 300, minimum %d)" % MIN_INTERVAL)
     ap.add_argument("--once", action="store_true", help="check once and exit")
     ap.add_argument("--open", action="store_true", help="also open MyUCLA in this computer's browser on an alert")
+    ap.add_argument("--state", metavar="FILE", help="remember the last status in FILE between runs (for scheduled --once runs)")
     ap.add_argument("--setup-phone", action="store_true", help="create a private ntfy topic and send a test push")
     ap.add_argument("--test-push", action="store_true", help="send a test push to your phone and exit")
     args = ap.parse_args()
@@ -348,12 +380,14 @@ def main():
     else:
         print("Phone alerts: OFF - run with --setup-phone first to get iPhone notifications.\n")
 
-    previous = {}
+    previous = load_state(args.state)
     try:
         while True:
-            check_all(previous, topic, args.open)
+            failures = check_all(previous, topic, args.open)
+            save_state(args.state, previous)
             if args.once:
-                break
+                # Non-zero exit makes a scheduled run show up as failed if a check didn't work.
+                return 2 if failures else 0
             time.sleep(interval + random.uniform(0, interval * 0.1))
     except KeyboardInterrupt:
         print("\nStopped.")
