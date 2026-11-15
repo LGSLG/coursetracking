@@ -1,0 +1,43 @@
+# Runs the UCLA seat watcher on GitHub's servers every 5 minutes, so your own
+# computer can be off. Put this file at  .github/workflows/seat-watch.yml
+# next to ucla_seat_watch.py in a PUBLIC repository (Actions minutes are free
+# there), and add your ntfy topic as a repository secret named NTFY_TOPIC.
+name: UCLA seat watch
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # GitHub's shortest interval; runs can arrive late
+  workflow_dispatch:         # lets you press "Run workflow" to test it
+
+concurrency:
+  group: seat-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Restore last known status
+        uses: actions/cache/restore@v6
+        with:
+          path: state.json
+          key: seat-state-${{ github.run_id }}
+          restore-keys: seat-state-
+
+      - name: Check the Schedule of Classes
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python3 ucla_seat_watch.py --once --state state.json
+
+      - name: Save status for the next run
+        if: always() && hashFiles('state.json') != ''
+        uses: actions/cache/save@v6
+        with:
+          path: state.json
+          key: seat-state-${{ github.run_id }}
